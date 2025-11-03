@@ -2,99 +2,103 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from keras.models import load_model  
-
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.preprocessing import MinMaxScaler
+from datetime import datetime
 
-# Page configuration
-st.set_page_config(page_title="Stock Price Predictor")
+# Streamlit Page Setup
+st.set_page_config(page_title="📈 Stock Price Predictor", layout="wide")
 
-# Title
-st.title("📈 Stock Price Predictor App")
+st.title("📊 Stock Price Predictor App")
 
-# User Input for Stock Symbol
-stock = st.text_input("Enter Stock Symbol:", "GOOG")
+# User Input
+stock = st.text_input("Enter Stock Symbol (e.g., GOOG, AAPL, TSLA):", "GOOG")
 
 # Load Data
-from datetime import datetime
 end = datetime.now()
 start = datetime(end.year - 20, end.month, end.day)
 google_data = yf.download(stock, start, end)
-google_data.columns = google_data.columns.droplevel(1) if isinstance(google_data.columns, pd.MultiIndex) else google_data.columns
+
+if google_data.empty:
+    st.error("⚠️ Could not fetch data. Please check the stock symbol or your internet connection.")
+    st.stop()
+
+st.subheader("📄 Stock Data")
+st.dataframe(google_data.tail())
 
 # Load Model
-model = load_model("Latest_stock_price_model.keras")
+try:
+    model = load_model("Latest_stock_price_model.keras")
+except Exception as e:
+    st.error(f"❌ Model could not be loaded: {e}")
+    st.stop()
 
-# Display Stock Data
-st.subheader("📊 Stock Data")
-st.dataframe(google_data)
+# Prepare Data
+data = google_data[['Close']].values
+train_len = int(len(data) * 0.7)
+train_data = data[:train_len]
+test_data = data[train_len - 100:]  # include overlap for prediction continuity
 
-# Splitting Data
-splitting_len = int(len(google_data) * 0.7)
-x_test = pd.DataFrame(google_data['Close'][splitting_len:], columns=['Close'])
+# Scale Data
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_train = scaler.fit_transform(train_data)
+scaled_test = scaler.transform(test_data)
 
-# Normalize Data
-scaler = MinMaxScaler(feature_range=(0,1))
-scaled_data = scaler.fit_transform(x_test)
+# Create Test Sequences
+x_test, y_test = [], []
+for i in range(100, len(scaled_test)):
+    x_test.append(scaled_test[i - 100:i])
+    y_test.append(scaled_test[i])
 
-x_data, y_data = [], []
-for i in range(100, len(scaled_data)):
-    x_data.append(scaled_data[i-100:i])
-    y_data.append(scaled_data[i])
-
-x_data, y_data = np.array(x_data), np.array(y_data)
+x_test, y_test = np.array(x_test), np.array(y_test)
 
 # Predict
-predictions = model.predict(x_data)
+predictions = model.predict(x_test)
+inv_predictions = scaler.inverse_transform(predictions)
+inv_y_test = scaler.inverse_transform(y_test)
 
-# Inverse Transform
-inv_pre = scaler.inverse_transform(predictions)
-inv_y_test = scaler.inverse_transform(y_data)
-
-# Create DataFrame for Comparison
-ploting_data = pd.DataFrame(
-    {'Original Data': inv_y_test.reshape(-1), 'Predicted Data': inv_pre.reshape(-1)},
-    index=google_data.index[splitting_len+100:]
+# Create DataFrame for Visualization
+plot_data = pd.DataFrame(
+    {
+        'Actual Price': inv_y_test.reshape(-1),
+        'Predicted Price': inv_predictions.reshape(-1)
+    },
+    index=google_data.index[train_len:]
 )
 
-st.subheader("📉 Predictions vs Actual Data")
-st.dataframe(ploting_data)
+# Show DataFrame
+st.subheader("📉 Predicted vs Actual Stock Prices")
+st.dataframe(plot_data.tail())
 
-# Interactive Graphs
-def create_interactive_chart(df, title):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df['Close'],
-        mode='lines', name='Close Price',
-        line=dict(color='orange', width=2),
-        hoverinfo='x+y'
-    ))
-    fig.update_layout(
-        title=title, xaxis_title='Date', yaxis_title='Price',
-        paper_bgcolor='white', plot_bgcolor='white'
-    )
-    return fig
-
-st.plotly_chart(create_interactive_chart(google_data, "📊 Stock Close Price"))
-
-# Interactive Prediction Graph
-fig = make_subplots()
-fig.add_trace(go.Scatter(
-    x=ploting_data.index, y=ploting_data['Original Data'],
-    mode='lines', name='Actual Price',
-    line=dict(color='green', width=2),
-    hoverinfo='x+y'
+# Chart 1: Stock Close Price
+fig1 = go.Figure()
+fig1.add_trace(go.Scatter(
+    x=google_data.index, y=google_data['Close'],
+    mode='lines', name='Close Price',
+    line=dict(color='blue', width=2)
 ))
-fig.add_trace(go.Scatter(
-    x=ploting_data.index, y=ploting_data['Predicted Data'],
-    mode='lines', name='Predicted Price',
-    line=dict(color='red', width=2),
-    hoverinfo='x+y'
-))
-fig.update_layout(
-    title='Predicted vs Actual Prices', xaxis_title='Date', yaxis_title='Price',
-    paper_bgcolor='white', plot_bgcolor='white'
+fig1.update_layout(
+    title=f"{stock} Stock Close Price Over Time",
+    xaxis_title="Date", yaxis_title="Price (USD)",
+    template="plotly_white"
 )
-st.plotly_chart(fig)
+st.plotly_chart(fig1, use_container_width=True)
+
+# Chart 2: Prediction vs Actual
+fig2 = make_subplots()
+fig2.add_trace(go.Scatter(
+    x=plot_data.index, y=plot_data['Actual Price'],
+    mode='lines', name='Actual Price', line=dict(color='green', width=2)
+))
+fig2.add_trace(go.Scatter(
+    x=plot_data.index, y=plot_data['Predicted Price'],
+    mode='lines', name='Predicted Price', line=dict(color='red', width=2)
+))
+fig2.update_layout(
+    title=f"{stock} - Predicted vs Actual Prices",
+    xaxis_title="Date", yaxis_title="Price (USD)",
+    template="plotly_white"
+)
+st.plotly_chart(fig2, use_container_width=True)
